@@ -1,9 +1,7 @@
 INFO:     Will watch for changes in these directories: ['/home/workspace']
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     Started reloader process [150] using StatReload
-INFO:     Started server process [152]
+INFO:     Started reloader process [334] using StatReload
+INFO:     Started server process [336]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
-INFO:     172.20.0.1:55884 - "HEAD / HTTP/1.1" 404 Not Found
-INFO:     172.20.0.1:55290 - "OPTIONS /chat HTTP/1.1" 200 OK
-INFO:     172.20.0.1:55290 - "POST /chat HTTP/1.1" 400 Bad Request
+INFO:     172.20.0.1:41470 - "HEAD / HTTP/1.1" 404 Not Found
