@@ -1,9 +1,13 @@
-import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+import os
+import requests
 
-app = FastAPI()
+app = FastAPI(title="Chatbot Proxy API", version="1.0.0")
 
+# Allow all origins for development convenience
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -12,60 +16,80 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def read_root():
-    return {"message": "Hello from FastAPI Backend!"}
 
-@app.get("/api/hello")
-def hello():
-    return {"message": "Hello from the backend API!"}
+class Message(BaseModel):
+    role: str = Field(..., description="Message role: system|user|assistant")
+    content: str = Field(..., description="Message content text")
+
+
+class ChatRequest(BaseModel):
+    messages: List[Message]
+    model: str = Field(
+        default="openai/gpt-4o-mini",
+        description="OpenRouter model identifier"
+    )
+    temperature: Optional[float] = Field(default=0.7, ge=0, le=2)
+    top_p: Optional[float] = Field(default=1.0, ge=0, le=1)
+    api_key: Optional[str] = Field(
+        default=None,
+        description="Optional OpenRouter API key. If omitted, server env OPENROUTER_API_KEY is used."
+    )
+    extra: Optional[Dict[str, Any]] = Field(default=None, description="Additional OpenRouter params")
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    model: str
+
 
 @app.get("/test")
-def test_database():
-    """Test endpoint to check if database is available and accessible"""
-    response = {
-        "backend": "✅ Running",
-        "database": "❌ Not Available",
-        "database_url": None,
-        "database_name": None,
-        "connection_status": "Not Connected",
-        "collections": []
+def test():
+    return {"status": "ok"}
+
+
+@app.post("/chat", response_model=ChatResponse)
+def chat(req: ChatRequest):
+    api_key = req.api_key or os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="OpenRouter API key not provided. Include api_key in request or set OPENROUTER_API_KEY env var.")
+
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        # These headers are recommended by OpenRouter for routing/analytics
+        "HTTP-Referer": os.getenv("APP_URL", "http://localhost:3000"),
+        "X-Title": os.getenv("APP_NAME", "Vibe Chatbot"),
     }
-    
+
+    payload: Dict[str, Any] = {
+        "model": req.model,
+        "messages": [m.dict() for m in req.messages],
+        "temperature": req.temperature,
+        "top_p": req.top_p,
+    }
+
+    if req.extra and isinstance(req.extra, dict):
+        payload.update(req.extra)
+
     try:
-        # Try to import database module
-        from database import db
-        
-        if db is not None:
-            response["database"] = "✅ Available"
-            response["database_url"] = "✅ Configured"
-            response["database_name"] = db.name if hasattr(db, 'name') else "✅ Connected"
-            response["connection_status"] = "Connected"
-            
-            # Try to list collections to verify connectivity
-            try:
-                collections = db.list_collection_names()
-                response["collections"] = collections[:10]  # Show first 10 collections
-                response["database"] = "✅ Connected & Working"
-            except Exception as e:
-                response["database"] = f"⚠️  Connected but Error: {str(e)[:50]}"
-        else:
-            response["database"] = "⚠️  Available but not initialized"
-            
-    except ImportError:
-        response["database"] = "❌ Database module not found (run enable-database first)"
-    except Exception as e:
-        response["database"] = f"❌ Error: {str(e)[:50]}"
-    
-    # Check environment variables
-    import os
-    response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
-    response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
-    
-    return response
+        r = requests.post(url, headers=headers, json=payload, timeout=60)
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Upstream request failed: {e}")
 
+    if r.status_code >= 400:
+        try:
+            data = r.json()
+        except Exception:
+            data = {"error": r.text}
+        raise HTTPException(status_code=r.status_code, detail=data)
 
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    data = r.json()
+    # Extract assistant message text
+    try:
+        reply = data["choices"][0]["message"]["content"].strip()
+        used_model = data.get("model", req.model)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unexpected response format from OpenRouter")
+
+    return ChatResponse(reply=reply, model=used_model)
